@@ -196,13 +196,13 @@ a.entry:hover{ color:var(--accent); text-decoration:underline; }
   display:inline-block; font-size:10px; font-weight:700; letter-spacing:.02em;
   padding:2px 6px; border-radius:4px; margin-right:9px; min-width:34px; text-align:center;
 }
-.badge.dir{ background:color-mix(in srgb, var(--cat-dir) 18%, transparent); color:var(--cat-dir); }
-.badge.code{ background:color-mix(in srgb, var(--cat-code) 18%, transparent); color:var(--cat-code); }
-.badge.archive{ background:color-mix(in srgb, var(--cat-archive) 18%, transparent); color:var(--cat-archive); }
-.badge.image{ background:color-mix(in srgb, var(--cat-image) 18%, transparent); color:var(--cat-image); }
-.badge.doc{ background:color-mix(in srgb, var(--cat-doc) 18%, transparent); color:var(--cat-doc); }
-.badge.media{ background:color-mix(in srgb, var(--cat-media) 18%, transparent); color:var(--cat-media); }
-.badge.other{ background:color-mix(in srgb, var(--cat-other) 18%, transparent); color:var(--cat-other); }
+.badge.dir{ background:#ffb4542e; color:var(--cat-dir); }
+.badge.code{ background:#b98cff2e; color:var(--cat-code); }
+.badge.archive{ background:#5fd4c02e; color:var(--cat-archive); }
+.badge.image{ background:#6bc7ff2e; color:var(--cat-image); }
+.badge.doc{ background:#e0c46b2e; color:var(--cat-doc); }
+.badge.media{ background:#ff8fb32e; color:var(--cat-media); }
+.badge.other{ background:#7d84942e; color:var(--cat-other); }
 
 .empty{ color:var(--muted); padding:18px 10px; }
 footer{ margin-top:28px; color:var(--muted); font-size:12px; }
