@@ -126,19 +126,6 @@ body{
   padding:32px 20px 64px;
 }
 .wrap{max-width:860px;margin:0 auto;}
-.prompt{
-  color:var(--muted); font-size:13px; margin-bottom:6px;
-  white-space:pre-wrap; word-break:break-all;
-}
-.prompt .user{color:var(--ok);}
-.prompt .host{color:var(--accent);}
-.prompt .path{color:var(--text);}
-.prompt .cursor{
-  display:inline-block; width:8px; height:14px; background:var(--accent);
-  margin-left:2px; vertical-align:-2px; animation:blink 1.1s steps(1) infinite;
-}
-@media (prefers-reduced-motion: reduce){ .prompt .cursor{animation:none;opacity:.8;} }
-@keyframes blink{0%,49%{opacity:1;}50%,100%{opacity:0;}}
 h1{
   font-size:18px; margin:2px 0 20px; font-weight:600; letter-spacing:.02em;
   color:var(--text);
@@ -291,7 +278,7 @@ _JS = """
 """
 
 
-def _render_page(title: str, heading_html: str, body_html: str, prompt_path: str) -> bytes:
+def _render_page(title: str, heading_html: str, body_html: str) -> bytes:
     page = f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -300,10 +287,9 @@ def _render_page(title: str, heading_html: str, body_html: str, prompt_path: str
 <style>{_CSS}</style>
 </head><body>
 <div class="wrap">
-  <div class="prompt"><span class="user">user</span>@<span class="host">upload-server</span>:<span class="path">{html.escape(prompt_path)}</span>$<span class="cursor"></span></div>
   <h1>{heading_html}</h1>
   {body_html}
-  <footer>SimpleHTTPWithUpload/{__version__} · served from this machine, no external requests made by this page</footer>
+  <footer>upload-server v{__version__} · served from this machine, no external requests made by this page</footer>
 </div>
 </body></html>"""
     return page.encode("utf-8")
@@ -318,7 +304,7 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
     """HTTP request handler supporting GET/HEAD/POST (upload)."""
 
-    server_version = "SimpleHTTPWithUpload/" + __version__
+    server_version = "upload-server/" + __version__
 
     # Overridable via CLI / class attributes set by main().
     max_upload_bytes: int = 200 * 1024 * 1024  # 200 MB default
@@ -380,7 +366,6 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             "Upload result",
             "Upload result",
             inner,
-            urllib.parse.unquote(self.path),
         )
         body = BytesIO(page_bytes)
         length = len(page_bytes)
@@ -615,7 +600,6 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             f"Index of {display_path}",
             f'Index of <span class="muted">{html.escape(display_path)}</span>',
             inner,
-            display_path,
         )
 
         f = BytesIO(page_bytes)
