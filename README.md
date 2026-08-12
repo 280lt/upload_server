@@ -67,6 +67,10 @@ This is a convenience tool for trusted networks (home LAN, an internal engagemen
 - **No TLS.** Credentials and file contents are sent in plaintext. If you need this reachable beyond a trusted LAN, put it behind a reverse proxy (e.g. Caddy or nginx) terminating HTTPS.
 - **Upload = write access.** Anyone who can authenticate (or anyone at all, if auth is off) can write files into the served directory, up to `--max-upload-mb`.
 
+- **Even without another execution path, this is an unauthenticated file-drop by default.** Anyone who can reach the port can upload arbitrary content (webshells, reverse shells, malware) and anyone who can reach it can download it, making an exposed instance a convenient staging/distribution point regardless of whether anything on the host actually runs it.
+
+- This dual-use nature is intentional and well known: this exact pattern (a throwaway HTTP server used to host and retrieve payloads) is a standard part of legitimate red-team/pentest workflows. The property that makes it risky if exposed carelessly is the same property that makes it useful in an authorized engagement — treat it accordingly, and never point it at a directory served by another interpreter unless that's the deliberate goal.
+
 Uploaded filenames are sanitised to prevent writing outside the target directory (the original gist this is based on did not do this).
 
 ## How it works
