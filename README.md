@@ -1,6 +1,6 @@
 # upload_server
 
-A single-file, dependency-free HTTP server for quickly sharing and receiving files over a LAN — browse a directory, drag-and-drop to upload, done. Built on Python's standard library only, so it runs anywhere Python 3.10+ does with no `pip install`.
+A single-file, dependency-free HTTP server for quickly sharing files over a LAN — browse and download from any directory, or drag-and-drop to upload into it. Built on Python's standard library only, so it runs anywhere Python 3.10+ does with no `pip install`.
 
 Originally based on the classic [`SimpleHTTPServer` + upload gist](https://gist.github.com/UniIsland/3346170), rewritten with a security fix, improved error handling, and a cleaner UI.
 
