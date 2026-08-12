@@ -167,6 +167,14 @@ input[type=file]{ display:none; }
 .status-line{ margin-top:10px; font-size:13px; color:var(--muted); min-height:18px; }
 .status-line.ok{ color:var(--ok); }
 .status-line.err{ color:var(--danger); }
+.upload-stats{
+  margin-top:8px; font-size:12.5px; color:var(--muted);
+  font-variant-numeric:tabular-nums; display:none;
+}
+.upload-stats.active{ display:flex; gap:14px; flex-wrap:wrap; }
+.upload-stats .stat{ margin-right:14px; }
+.upload-stats .stat:last-child{ margin-right:0; }
+.upload-stats .stat b{ color:var(--text); font-weight:600; }
 
 table{ width:100%; border-collapse:collapse; }
 th{
@@ -202,7 +210,8 @@ footer a{ color:var(--muted); }
 """
 
 # Progressive enhancement: the plain <form> works with JS disabled.
-# With JS, drag/drop + an XHR upload with a real progress bar takes over.
+# With JS, drag/drop + an XHR upload with progress, live throughput,
+# and byte counters takes over.
 _JS = """
 (function(){
   var form = document.getElementById('uploadForm');
@@ -213,16 +222,37 @@ _JS = """
   var fill = document.getElementById('progressFill');
   var status = document.getElementById('statusLine');
   var submitBtn = document.getElementById('submitBtn');
+  var stats = document.getElementById('uploadStats');
+  var statTransferred = document.getElementById('statTransferred');
+  var statTotal = document.getElementById('statTotal');
+  var statRemaining = document.getElementById('statRemaining');
+  var statSpeed = document.getElementById('statSpeed');
+  var statEta = document.getElementById('statEta');
 
   function setFile(file){
     if(!file) return;
     label.innerHTML = 'Selected: <span class="filename"></span>';
-    label.querySelector('.filename').textContent = file.name + ' (' + fmt(file.size) + ')';
+    label.querySelector('.filename').textContent = file.name + ' (' + fmtBytes(file.size) + ')';
   }
-  function fmt(n){
-    var units=['B','K','M','G']; var i=0;
+
+  // Auto-scaling byte formatter: picks B / KB / MB / GB based on
+  // magnitude rather than a fixed unit, so a 4KB file and a 4GB file
+  // both read naturally.
+  function fmtBytes(n){
+    var units=['B','KB','MB','GB','TB']; var i=0;
+    n = Math.max(n, 0);
     while(n>=1024 && i<units.length-1){ n/=1024; i++; }
-    return (i===0? n : n.toFixed(1)) + units[i];
+    return (i===0 ? Math.round(n) : n.toFixed(1)) + ' ' + units[i];
+  }
+  function fmtSpeed(bytesPerSec){
+    if(!isFinite(bytesPerSec) || bytesPerSec <= 0) return '—';
+    return fmtBytes(bytesPerSec) + '/s';
+  }
+  function fmtEta(seconds){
+    if(!isFinite(seconds) || seconds <= 0) return '';
+    if(seconds < 60) return Math.ceil(seconds) + 's left';
+    var m = Math.floor(seconds/60), s = Math.round(seconds%60);
+    return m + 'm ' + s + 's left';
   }
 
   input.addEventListener('change', function(){ setFile(input.files[0]); });
@@ -245,22 +275,52 @@ _JS = """
     var data = new FormData(form);
     submitBtn.disabled = true;
     bar.classList.add('active');
+    stats.classList.add('active');
     status.textContent = 'Uploading…';
     status.className = 'status-line';
 
+    // Throughput is measured as an exponential moving average over
+    // instantaneous samples so the displayed speed is stable rather
+    // than jumping around with every progress tick.
+    var startTime = performance.now();
+    var lastTime = startTime;
+    var lastLoaded = 0;
+    var smoothedSpeed = null;
+    var ALPHA = 0.3;
+
     xhr.upload.addEventListener('progress', function(evt){
-      if(evt.lengthComputable){
-        var pct = Math.round((evt.loaded/evt.total)*100);
-        fill.style.width = pct + '%';
+      if(!evt.lengthComputable) return;
+      var now = performance.now();
+      var dt = (now - lastTime) / 1000;
+      var pct = Math.round((evt.loaded/evt.total)*100);
+      fill.style.width = pct + '%';
+
+      if(dt > 0.1){
+        var instSpeed = (evt.loaded - lastLoaded) / dt;
+        smoothedSpeed = (smoothedSpeed === null) ? instSpeed
+                         : (ALPHA * instSpeed + (1 - ALPHA) * smoothedSpeed);
+        lastTime = now;
+        lastLoaded = evt.loaded;
       }
+
+      var remaining = evt.total - evt.loaded;
+      statTransferred.textContent = fmtBytes(evt.loaded) + ' (' + pct + '%)';
+      statTotal.textContent = fmtBytes(evt.total);
+      statRemaining.textContent = fmtBytes(remaining);
+      statSpeed.textContent = fmtSpeed(smoothedSpeed);
+      statEta.textContent = smoothedSpeed ? fmtEta(remaining / smoothedSpeed) : '';
     });
     xhr.addEventListener('load', function(){
       submitBtn.disabled = false;
       if(xhr.status >= 200 && xhr.status < 300){
         fill.style.width = '100%';
+        var elapsed = (performance.now() - startTime) / 1000;
+        var avgSpeed = elapsed > 0 ? (lastLoaded || 0) / elapsed : 0;
         status.textContent = 'Upload complete — reloading…';
         status.className = 'status-line ok';
-        setTimeout(function(){ window.location.reload(); }, 500);
+        statSpeed.textContent = fmtSpeed(avgSpeed) + ' avg';
+        statEta.textContent = '';
+        setTimeout(function(){ window.location.reload(); }, 600);
       } else {
         status.textContent = 'Upload failed (HTTP ' + xhr.status + '). See response for details.';
         status.className = 'status-line err';
@@ -307,7 +367,8 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
     server_version = "upload-server/" + __version__
 
     # Overridable via CLI / class attributes set by main().
-    max_upload_bytes: int = 200 * 1024 * 1024  # 200 MB default
+    # None means "no limit" (--max-upload-mb 0).
+    max_upload_bytes: int | None = 200 * 1024 * 1024  # 200 MB default
     allow_overwrite: bool = False
     auth_header: str | None = None  # e.g. "Basic base64(user:pass)"
 
@@ -389,7 +450,7 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
 
         if content_length <= 0:
             return False, "Empty request body"
-        if content_length > self.max_upload_bytes:
+        if self.max_upload_bytes is not None and content_length > self.max_upload_bytes:
             # Drain the socket so the connection can be cleanly closed
             # instead of left desynced, then reject.
             self._discard_body(content_length)
@@ -589,6 +650,14 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
               <button class="btn" id="submitBtn" type="submit">Upload</button>
             </div>
             <div class="progress" id="progressBar"><i id="progressFill"></i></div>
+            <div class="upload-stats" id="uploadStats">
+              <span class="stat"><b id="statTransferred">0 B</b> of <b id="statTotal">0 B</b></span>
+              <span class="stat sep">·</span>
+              <span class="stat"><b id="statRemaining">0 B</b> remaining</span>
+              <span class="stat sep">·</span>
+              <span class="stat"><b id="statSpeed">—</b></span>
+              <span class="stat" id="statEta"></span>
+            </div>
             <div class="status-line" id="statusLine"></div>
           </div>
         </form>
@@ -652,7 +721,8 @@ def main():
     parser.add_argument("--port", type=int, default=8000, help="port to listen on (default: 8000)")
     parser.add_argument("--directory", default=".", help="directory to serve (default: cwd)")
     parser.add_argument("--max-upload-mb", type=int, default=200,
-                         help="max accepted upload size in MB (default: 200)")
+                         help="max accepted upload size in MB (default: 200). "
+                              "Use 0 for no limit.")
     parser.add_argument("--overwrite", action="store_true",
                          help="allow uploads to overwrite existing files (default: rename instead)")
     parser.add_argument("--user", help="username for HTTP Basic Auth (requires --password)")
@@ -669,8 +739,8 @@ def main():
     if not (1 <= args.port <= 65535):
         parser.error(f"--port must be between 1 and 65535, got {args.port}")
 
-    if args.max_upload_mb <= 0:
-        parser.error(f"--max-upload-mb must be positive, got {args.max_upload_mb}")
+    if args.max_upload_mb < 0:
+        parser.error(f"--max-upload-mb must be 0 (no limit) or positive, got {args.max_upload_mb}")
 
     # --- validate/prepare the target directory with a clear message ---
     target = args.directory
@@ -705,7 +775,12 @@ def main():
                      "process — uploads will likely fail with a "
                      "permission error.", os.getcwd())
 
-    SimpleHTTPRequestHandler.max_upload_bytes = args.max_upload_mb * 1024 * 1024
+    if args.max_upload_mb == 0:
+        SimpleHTTPRequestHandler.max_upload_bytes = None
+        log.warning("No upload size limit set (--max-upload-mb 0) — a client "
+                     "can fill available disk space with a single upload.")
+    else:
+        SimpleHTTPRequestHandler.max_upload_bytes = args.max_upload_mb * 1024 * 1024
     SimpleHTTPRequestHandler.allow_overwrite = args.overwrite
     if args.user:
         token = base64.b64encode(f"{args.user}:{args.password}".encode()).decode()
