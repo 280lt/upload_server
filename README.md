@@ -44,7 +44,6 @@ python3 server.py \
   --user alice \
   --password 'change-me'
 ```
-
 ## CLI options
 
 | Flag | Default | Description |
@@ -53,7 +52,7 @@ python3 server.py \
 | `--port` | `8000` | Port to listen on |
 | `--directory` | `.` | Directory to serve and receive uploads into |
 | `--create-directory` | off | Create `--directory` automatically if it doesn't exist |
-| `--max-upload-mb` | `200` | Reject uploads larger than 200Mb. Use `0` for no limit |
+| `--max-upload-mb` | `200` | Reject uploads larger than this. Use `0` for no limit |
 | `--overwrite` | off | Allow uploads to overwrite existing files (default: auto-renamed instead) |
 | `--user` / `--password` | none | Enable HTTP Basic Auth (both required together) |
 
@@ -66,14 +65,10 @@ This is a convenience tool for trusted networks (home LAN, an internal engagemen
 - **No auth by default.** Anyone who can reach the port can read and upload files unless `--user`/`--password` is set. The server logs a warning on startup if auth is disabled.
 - **No TLS.** Credentials and file contents are sent in plaintext. If you need this reachable beyond a trusted LAN, put it behind a reverse proxy (e.g. Caddy or nginx) terminating HTTPS.
 - **Upload = write access.** Anyone who can authenticate (or anyone at all, if auth is off) can write files into the served directory, up to `--max-upload-mb`.
-
-- **Even without another execution path, this is an unauthenticated file-drop by default.** Anyone who can reach the port can upload arbitrary content (webshells, reverse shells, malware) and anyone who can reach it can download it, making an exposed instance a convenient staging/distribution point regardless of whether anything on the host actually runs it.
-
-- This dual-use nature is intentional and well known: this exact pattern (a throwaway HTTP server used to host and retrieve payloads) is a standard part of legitimate red-team/pentest workflows. The property that makes it risky if exposed carelessly is the same property that makes it useful in an authorized engagement — treat it accordingly, and never point it at a directory served by another interpreter unless that's the deliberate goal.
-
--  **Upload = write access.** Anyone who can authenticate (or anyone at all, if auth is off) can write files into the served directory, up to `--max-upload-mb`.
-
 - **Why there's a default size cap.** The server has no way to know how large an incoming upload will be other than trusting the client's declared `Content-Length` — so without a limit, a single request (malicious or just a large accidental transfer) could fill available disk space before you could react. 200MB is a conservative default that covers typical file sharing without getting in the way; raise it with `--max-upload-mb` for larger transfers, or set `--max-upload-mb 0` to disable the cap entirely (the server logs a warning on startup when you do, since it removes this protection).
+- **Uploads are never executed by this server** — it only writes bytes to disk and serves them back over `GET`/`HEAD`. However, if the served directory is also reachable through something that *does* execute files (e.g. Apache/nginx with PHP-FPM pointed at the same folder, a cron job scanning the directory, another service watching it), an uploaded webshell or script becomes remote code execution the moment it's requested through *that* other service — not through this tool directly.
+- **Even without another execution path, this is an unauthenticated file-drop by default.** Anyone who can reach the port can upload arbitrary content (webshells, reverse shells, malware) and anyone who can reach it can download it, making an exposed instance a convenient staging/distribution point regardless of whether anything on the host actually runs it.
+- This dual-use nature is intentional and well known: this exact pattern (a throwaway HTTP server used to host and retrieve payloads) is a standard part of legitimate red-team/pentest workflows. The property that makes it risky if exposed carelessly is the same property that makes it useful in an authorized engagement — treat it accordingly, and never point it at a directory served by another interpreter unless that's the deliberate goal.
 
 Uploaded filenames are sanitised to prevent writing outside the target directory (the original gist this is based on did not do this).
 
