@@ -4,7 +4,7 @@ A single-file, dependency-free HTTP server for quickly sharing and receiving fil
 
 Originally based on the classic [`SimpleHTTPServer` + upload gist](https://gist.github.com/UniIsland/3346170), rewritten with a security fix, improved error handling, and a cleaner UI.
 
-<img width="941" height="396" alt="Screenshot 2026-08-11 at 18 44 25" src="https://github.com/user-attachments/assets/54139fa5-e3ce-41b5-8bf2-291a82a4bc15" />
+<img width="886" height="410" alt="Screenshot 2026-08-12 at 12 06 49" src="https://github.com/user-attachments/assets/2416a804-e2b2-40f3-b96c-d2e0c14bf750" />
 
 **Repo:** https://github.com/280lt/upload_server
 
