@@ -82,4 +82,4 @@ No database, no config file, no state beyond the filesystem it's pointed at.
 
 ## License
 
-[MIT](LICENSE) — or update this section to match whatever license you're publishing under.
+[MIT](LICENSE)
