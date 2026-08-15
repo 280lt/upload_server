@@ -15,6 +15,20 @@ Improvements over the original (bones7456 / UniIsland gist):
   * Optional HTTP Basic Auth (--user/--password) since the original
     has no authentication at all — fine on a trusted LAN, not fine
     exposed more broadly.
+  * Uploads stream into a temp file in the target directory and are
+    only placed at their final name once fully received: a dropped
+    connection mid-transfer leaves no partial file at the real
+    filename, and placing the finished file is a single atomic
+    filesystem operation rather than a check-then-open, which closes
+    a race where two concurrent uploads of the same filename could
+    otherwise both pass an exists() check before either had created
+    the file.
+  * The multipart body is parsed with bounded chunked reads and a
+    proper delimiter scan (CRLF + "--" + boundary), rather than
+    line-by-line reads that could buffer unbounded data on binary
+    content with no newlines, or misfire if the boundary bytes
+    happened to appear inside file content that wasn't an actual
+    delimiter.
   * logging instead of print(), CLI args for port/bind/directory,
     duplicate-filename handling (won't silently clobber existing files
     unless --overwrite is passed).
@@ -39,6 +53,7 @@ import posixpath
 import re
 import shutil
 import socketserver
+import tempfile
 import urllib.parse
 from io import BytesIO
 
@@ -372,6 +387,11 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
     allow_overwrite: bool = False
     auth_header: str | None = None  # e.g. "Basic base64(user:pass)"
 
+    # Internal tuning constants for multipart parsing.
+    _UPLOAD_CHUNK = 65536          # bytes read from the socket per iteration
+    _MAX_HEADER_LINE = 8192        # bound readline() so a client can't force
+    _MAX_HEADER_LINES = 64         # unbounded buffering by never sending \n
+
     # ---- auth -----------------------------------------------------
 
     def _check_auth(self) -> bool:
@@ -434,7 +454,13 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(length))
         self.end_headers()
-        self.copyfile(body, self.wfile)
+        try:
+            self.copyfile(body, self.wfile)
+        except (BrokenPipeError, ConnectionResetError):
+            # Client (or the network) already gave up on the
+            # connection — the upload outcome above is already logged,
+            # there's just nowhere left to send the result page.
+            log.debug("Client disconnected before the response could be sent")
 
     # ---- upload handling -------------------------------------------
 
@@ -460,19 +486,25 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
         boundary = content_type.split("boundary=", 1)[1].strip().strip('"').encode()
         remaining = content_length
 
-        line = self.rfile.readline()
+        # Header lines are always short in practice; bound readline()
+        # explicitly so a misbehaving client can't force unbounded
+        # buffering by never sending a newline.
+        line = self.rfile.readline(self._MAX_HEADER_LINE)
         remaining -= len(line)
         if boundary not in line:
             self._discard_body(max(remaining, 0))
             return False, "Content NOT begin with boundary"
 
         header_block = b""
-        while True:
-            line = self.rfile.readline()
+        for _ in range(self._MAX_HEADER_LINES):
+            line = self.rfile.readline(self._MAX_HEADER_LINE)
             remaining -= len(line)
             if line in (b"\r\n", b"\n", b""):
                 break
             header_block += line
+        else:
+            self._discard_body(max(remaining, 0))
+            return False, "Malformed upload: too many header lines"
 
         match = re.search(
             rb'Content-Disposition.*name="file"; filename="([^"]*)"',
@@ -501,34 +533,113 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             self._discard_body(max(remaining, 0))
             return False, "Rejected: path escapes target directory"
 
-        if os.path.exists(dest_path) and not self.allow_overwrite:
-            dest_path = self._unique_path(dest_path)
-
+        # Stream into a temp file in the same directory first, rather
+        # than writing straight to dest_path. This means: (a) a
+        # dropped connection mid-upload leaves no partial file at the
+        # real filename, only an orphaned temp file which we clean up
+        # below; and (b) placing the finished file at its final name
+        # (_finalize_upload) is a single atomic filesystem operation,
+        # closing a race where two concurrent uploads of the same
+        # filename could both pass an exists() check before either
+        # had actually created the file.
         try:
-            out = open(dest_path, "wb")
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=target_dir, prefix=".upload-", suffix=".part"
+            )
         except OSError as exc:
             self._discard_body(max(remaining, 0))
-            return False, f"Can't create file to write: {exc}"
+            return False, f"Can't create temp file to write: {exc}"
+
+        # The multipart body is scanned for the exact closing
+        # delimiter (CRLF + "--" + boundary) using bounded chunked
+        # reads, rather than the common line-by-line approach. That
+        # avoids two problems: readline() can buffer an unbounded
+        # amount of data if binary content happens to contain no
+        # newline for a long stretch, and a naive "boundary appears
+        # somewhere in this line" check can misfire if the boundary
+        # bytes coincidentally appear inside file content that isn't
+        # actually a delimiter.
+        delimiter = b"\r\n--" + boundary
+        keep_tail = len(delimiter) - 1
+        buf = b""
+        found = False
 
         try:
-            preline = self.rfile.readline()
-            remaining -= len(preline)
-            while remaining >= 0:
-                line = self.rfile.readline()
-                remaining -= len(line)
-                if boundary in line:
-                    preline = preline[:-1]
-                    if preline.endswith(b"\r"):
-                        preline = preline[:-1]
-                    out.write(preline)
-                    return True, f"File '{os.path.basename(dest_path)}' upload success!"
-                out.write(preline)
-                preline = line
-                if not line:
-                    break
-            return False, "Unexpected end of data"
-        finally:
-            out.close()
+            with os.fdopen(tmp_fd, "wb") as out:
+                while True:
+                    if not found and remaining > 0:
+                        chunk = self.rfile.read(min(self._UPLOAD_CHUNK, remaining))
+                        if not chunk:
+                            # Peer closed the connection before sending
+                            # everything Content-Length promised.
+                            break
+                        remaining -= len(chunk)
+                        buf += chunk
+
+                    idx = buf.find(delimiter)
+                    if idx != -1:
+                        out.write(buf[:idx])
+                        found = True
+                        break
+
+                    if len(buf) > keep_tail:
+                        write_upto = len(buf) - keep_tail
+                        out.write(buf[:write_upto])
+                        buf = buf[write_upto:]
+
+                    if remaining <= 0:
+                        # Exhausted the declared body without ever
+                        # seeing the closing boundary.
+                        break
+
+            if not found:
+                os.unlink(tmp_path)
+                self._discard_body(max(remaining, 0))
+                return False, "Unexpected end of data (upload incomplete or malformed)"
+
+            self._discard_body(max(remaining, 0))
+            final_path = self._finalize_upload(tmp_path, dest_path)
+            return True, f"File '{os.path.basename(final_path)}' upload success!"
+
+        except Exception:
+            # Any unexpected failure: don't leave an orphaned temp
+            # file behind.
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def _finalize_upload(self, tmp_path: str, dest_path: str) -> str:
+        """Atomically place a completed temp upload at its final name.
+
+        Returns the path actually used. When overwriting is allowed,
+        this is a single atomic rename (os.replace). When it isn't,
+        this uses an atomic hard-link-then-unlink pattern — os.link
+        fails with FileExistsError if the target already exists,
+        rather than silently succeeding the way a plain rename would
+        — so it's safe under concurrent uploads of the same filename,
+        unlike an exists()-check followed by a separate open().
+        """
+        if self.allow_overwrite:
+            os.replace(tmp_path, dest_path)
+            return dest_path
+
+        base, ext = os.path.splitext(dest_path)
+        candidate = dest_path
+        suffix = 0
+        while True:
+            try:
+                os.link(tmp_path, candidate)
+            except FileExistsError:
+                suffix += 1
+                candidate = f"{base}_{suffix}{ext}"
+                if suffix > 10_000:  # sanity bound; should never trigger
+                    raise
+                continue
+            else:
+                os.unlink(tmp_path)
+                return candidate
 
     def _discard_body(self, nbytes: int) -> None:
         """Read and drop up to nbytes from the socket to keep the
@@ -540,16 +651,6 @@ class SimpleHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             if not data:
                 break
             remaining -= len(data)
-
-    @staticmethod
-    def _unique_path(path: str) -> str:
-        base, ext = os.path.splitext(path)
-        i = 1
-        candidate = path
-        while os.path.exists(candidate):
-            candidate = f"{base}_{i}{ext}"
-            i += 1
-        return candidate
 
     # ---- static file serving (unchanged behaviour, tidied up) -------
 
